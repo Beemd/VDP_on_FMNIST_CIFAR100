@@ -12,7 +12,7 @@ import numpy as np
 import pickle
 import torch.utils.data
 from skimage.util import random_noise
-from VDPLayers_VarCoVar import VDP_Flatten, VDP_Conv2D, VDP_Relu, VDP_Maxpool, VDP_FullyConnected, VDP_Softmax, VDP_BatchNorm2D, VDP_Avgpool2d
+from VDPLayers_VarCoVar import VDP_Flatten, VDP_Conv2D, VDP_Relu, VDP_Maxpool, VDP_FullyConnected, VDP_Softmax, VDP_BatchNorm2D, VDP_AdaptiveAvgPool2d
 import logging
 import torchattacks
 from pytorch_lightning import seed_everything
