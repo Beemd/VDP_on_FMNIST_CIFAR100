@@ -308,3 +308,18 @@ class VDP_BatchNorm2D(nn.Module):
         sigma_bn = (torch.mul(sigma.permute(0,2,3,1), 1 / (var + self.eps))).permute(0,3,1,2)
 
         return mu_bn, sigma_bn
+    
+
+class VDP_AdaptiveAvgPool2d(nn.Module):
+#"Only to be used for output size equal to 1x1."
+    def __init__(self):
+
+        super(VDP_AdaptiveAvgPool2d, self).__init__()
+        self.adapavgpool = torch.nn.AdaptiveAvgPool2d(1)
+       
+    def forward(self, mu, sigma):
+
+        mu_ap = self.adapavgpool(mu)
+        sigma_ap = self.adapavgpool(sigma)
+        
+        return mu_ap, sigma_ap
