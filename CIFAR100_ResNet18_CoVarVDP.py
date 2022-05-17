@@ -20,7 +20,7 @@ from pytorch_lightning import seed_everything
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 # For mutliple devices (GPUs: 4, 5, 6, 7)
-os.environ["CUDA_VISIBLE_DEVICES"] = "4"
+os.environ["CUDA_VISIBLE_DEVICES"] = "5"
 
 parser = argparse.ArgumentParser(prog="eVI")
 
@@ -37,15 +37,16 @@ parser.add_argument('--adv_attack', type=bool, default=False, help='Adding adver
 parser.add_argument('--adv_trgt', type=int, default=313, help='Adding adversarial attack Target')
 # Load Model
 parser.add_argument('--load_model', type=str, default='', help='Path to a previously trained model checkpoint')
-parser.add_argument('--data_path', type=str, default='', help='Path to save dataset data')
+parser.add_argument('--data_path', type=str, default='../../../../data/', help='Path to save dataset data')
 # Loss Function Parameters
 parser.add_argument('--tau_conv1', type=float, default=0.001, help='KL Weight Term') 
 parser.add_argument('--tau_b2', type=float, default=0.01, help='KL Weight Term') 
 parser.add_argument('--tau_b3', type=float, default=0.01, help='KL Weight Term') 
 parser.add_argument('--tau_b4', type=float, default=0.01, help='KL Weight Term') 
 parser.add_argument('--tau_fc', type=float, default=0.001, help='KL Weight Term') 
-parser.add_argument('--clamp', type=float, default=1000, help='Clamping')
-parser.add_argument('--var_sup', type=float, default=0.001, help='Loss Variance Bias')
+parser.add_argument('--tau_nll', type=float, default=0.05, help='Weight for NLL loss term') 
+# parser.add_argument('--clamp', type=float, default=1000, help='Clamping') 
+# parser.add_argument('--var_sup', type=float, default=0.001, help='Loss Variance Bias')
 # Learning Rate Parameters
 parser.add_argument('--lr', type=float, default=0.001, help='Learning Rate')
 parser.add_argument('--wd', type=float, default=0.00005, help='Weight decay')
@@ -107,7 +108,7 @@ class Block(nn.Module):
 
 
 class ResNet(nn.Module):
-    def __init__(self, num_layers, block, image_channels, num_classes):
+    def __init__(self, args, num_layers, block, image_channels, num_classes):
         assert num_layers in [18, 34, 50, 101, 152], f'ResNet{num_layers}: Unknown architecture! Number of layers has ' \
                                                      f'to be 18, 34, 50, 101, or 152 '
         super(ResNet, self).__init__()
@@ -125,14 +126,19 @@ class ResNet(nn.Module):
             layers = [3, 8, 36, 3]
         self.in_channels = 64
         self.output_size = num_classes
+        
+        self.tau_conv1 = args.tau_conv1
+        self.tau_b2 = args.tau_b2
+        self.tau_b3 = args.tau_b3
+        self.tau_b4 = args.tau_b4
+        self.tau_fc = args.tau_fc
+        self.tau_nll = args.tau_nll         
+        
         self.conv1 = VDP_Conv2D(image_channels, 64, kernel_size=7, stride=2, padding=3, input_flag=True)
         self.bn1 = VDP_BatchNorm2D(64)
         self.relu = VDP_Relu()
         self.maxpool = VDP_Maxpool(kernel_size=3, stride=2, padding=1)
-#         self.conv1 = nn.Conv2d(image_channels, 64, kernel_size=7, stride=2, padding=3)
-#         self.bn1 = nn.BatchNorm2d(64)
-#         self.relu = nn.ReLU()
-#         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
         self.block11 = block(18, 64, 64, stride=1)
         self.block12 = block(18, 64, 64, stride=1)
         self.block21 = block(18, 64, 128, stride=2)
@@ -142,8 +148,7 @@ class ResNet(nn.Module):
         self.block41 = block(18, 256, 512, stride=2)
         self.block42 = block(18, 512, 512, stride=1)
 
-        self.avgpool = VDP_Avgpool2d()
-#         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.avgpool = VDP_AdaptiveAvgPool2d()
         self.fc = VDP_FullyConnected(512 * self.expansion, num_classes)
         self.flatten = VDP_Flatten()
         self.softmax = VDP_Softmax()
@@ -189,11 +194,11 @@ class ResNet(nn.Module):
         output_sigma_clamp = torch.clamp(output_sigma,-1000,1000)
         neg_log_likelihood = self.nll_gaussian(output_mean, output_sigma_clamp, target)
 
-        loss_value = 0.05*neg_log_likelihood + (self.tau_conv1*self.conv1.kl_loss_term() +
-                                               self.tau_b2*self.block21.conv11.kl_loss_term() + 
-                                               self.tau_b3*self.block31.conv11.kl_loss_term() +
-                                               self.tau_b4*self.block41.conv11.kl_loss_term() +
-                                               self.tau_fc*self.fc.kl_loss_term())        
+        loss_value = self.tau_nll*neg_log_likelihood + (self.tau_conv1*self.conv1.kl_loss_term() +
+                                                        self.tau_b2*self.block21.conv11.kl_loss_term() + 
+                                                        self.tau_b3*self.block31.conv11.kl_loss_term() + 
+                                                        self.tau_b4*self.block41.conv11.kl_loss_term() + 
+                                                        self.tau_fc*self.fc.kl_loss_term())        
         return loss_value
 
 ####################################################################################################
@@ -230,8 +235,6 @@ def train(args, model, optimizer, train_loader, epoch):
         loss.backward()
 #         nn.utils.clip_grad_value_(model.parameters(), 0.1)
         optimizer.step()
-#         print(model.conv1.sigma_weight.grad)
-#         print(model.fc.sigma_weight.grad)
                 
         if batch_idx % 50 == 0:
             print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
@@ -475,7 +478,7 @@ def main():
 
     if args.testing==False:
 #         network = Net(args).to(args.devices)
-        network = ResNet(18, Block, 3, args.output_size).to(args.devices)
+        network = ResNet(args, 18, Block, 3, args.output_size).to(args.devices)
         optimizer = optim.SGD(network.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.wd)
         scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[30, 70, 110], gamma=0.1)
 #         scheduler  = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=20, eta_min=0.0005)
